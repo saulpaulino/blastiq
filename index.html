@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BLASTIQ Market Intel v3</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body,#root{height:100%;overflow:hidden}
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#1e2a3a;border-radius:3px}
+@keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
+@keyframes slideIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+@keyframes scanPulse{0%,100%{box-shadow:0 0 8px rgba(245,158,11,.2)}50%{box-shadow:0 0 24px rgba(245,158,11,.5)}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback,useRef} = React;
+
+// ===== STYLES =====
+const C={bg:"#0a0e17",card:"#111827",hover:"#1a2234",side:"#0d1220",brd:"#1e2a3a",brdL:"#2a3a4e",
+tx:"#e2e8f0",txM:"#8896ab",txD:"#5a6577",acc:"#f59e0b",accG:"rgba(245,158,11,.15)",
+cr:"#ef4444",crBg:"rgba(239,68,68,.1)",hi:"#f59e0b",hiBg:"rgba(245,158,11,.1)",
+md:"#3b82f6",mdBg:"rgba(59,130,246,.1)",ok:"#10b981",okBg:"rgba(16,185,129,.1)",dm:"#6b7280"};
+const F={h:"'JetBrains Mono',monospace",b:"'IBM Plex Sans',sans-serif",m:"'JetBrains Mono',monospace"};
+const fmt=v=>v>=1e6?`$${(v/1e6).toFixed(1)}M`:`$${(v/1e3).toFixed(0)}K`;
+const pC=p=>p==="critical"?C.cr:p==="high"?C.hi:p==="medium"?C.md:C.dm;
+const pB=p=>p==="critical"?C.crBg:p==="high"?C.hiBg:p==="medium"?C.mdBg:"rgba(107,114,128,.1)";
+const sMap={"pre-licitación":"Pre-Licitación","diseño-avanzado":"Diseño Avanzado","estudio-factibilidad":"Factibilidad","permiso-aprobado":"Permiso OK","negociación":"Negociación","planificación":"Planificación","licitación-activa":"Licitación Activa","detectado":"Detectado"};
+const sL=s=>sMap[s]||s;
+
+// ===== GOOGLE SHEETS API =====
+async function fetchSheet(apiKey,sheetId,name,range){
+  if(!apiKey||!sheetId)return null;
+  try{
+    const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(name)}!${range}?key=${apiKey}`);
+    if(!r.ok)throw new Error(r.status);
+    return(await r.json()).values||[];
+  }catch(e){console.error("Fetch sheet error:",e);return null;}
+}
+
+async function appendToSheet(apiKey,sheetId,sheetName,values){
+  // Note: API Key alone can't write. We use a different approach.
+  // We'll store the analyzed data and user can copy or we use Apps Script
+  return values;
+}
+
+function parseProjects(rows){
+  if(!rows||rows.length<2)return null;
+  return rows.slice(1).map(r=>({
+    id:r[0]||"",title:r[1]||"",source:r[2]||"",type:r[3]||"",region:r[4]||"",province:r[5]||"",
+    estimatedValue:parseFloat(r[6])||0,blastingProbability:parseInt(r[7])||0,detectedDate:r[8]||"",
+    estimatedStart:r[9]||"",status:r[10]||"",description:r[11]||"",
+    signals:(r[12]||"").split(";").map(s=>s.trim()).filter(Boolean),
+    competitors:(r[13]||"").split(";").map(s=>s.trim()).filter(Boolean),
+    aiInsight:r[14]||"",priority:r[15]||"medium",contactLead:r[16]||""
+  }));
+}
+
+function parseCompetitors(rows){
+  if(!rows||rows.length<2)return null;
+  return rows.slice(1).map(r=>({name:r[0]||"",marketShare:parseInt(r[1])||0,projects:parseInt(r[2])||0,avgPrice:r[3]||"",threat:r[4]||"low"}));
+}
+
+function parseHistorical(rows){
+  if(!rows||rows.length<2)return null;
+  return rows.slice(1).map(r=>({month:r[0]||"",revenue:parseInt(r[1])||0,projects:parseInt(r[2])||0,winRate:parseInt(r[3])||0}));
+}
+
+// ===== NEWS SCANNER ENGINE =====
+async function scanNews(claudeKey, existingTitles){
+  const searchQueries = [
+    "licitación infraestructura República Dominicana 2026",
+    "construcción carretera autopista República Dominicana",
+    "cantera minería explosivos Dominicana",
+    "presa hidroeléctrica proyecto Dominicana",
+    "excavación obra pública Dominicana"
+  ];
+  
+  // Use Claude with web search to find and analyze news
+  const prompt = `Busca noticias recientes sobre proyectos de infraestructura en República Dominicana que podrían requerir servicios de explosivos comerciales (voladuras, excavación en roca, canteras, túneles, presas, carreteras con cortes de montaña, minería).
+
+Para cada proyecto relevante que encuentres, genera un objeto JSON. Responde SOLO con un array JSON puro sin markdown ni backticks. Formato de cada objeto:
+{"id":"PRJ-2026-${String(Date.now()).slice(-3)}","titulo":"nombre del proyecto","fuente":"Fuente de la noticia","tipo":"Carreteras|Hidroeléctrica|Metro/Túnel|Minería|Industrial|Portuario|Transporte|Otro","region":"Norte|Sur|Este|Oeste|DN|Noroeste|Noreste|Suroeste|Sureste","provincia":"nombre provincia","valor_estimado":0,"prob_voladura":85,"fecha_deteccion":"${new Date().toISOString().split('T')[0]}","inicio_estimado":"2026-XX","status":"detectado","descripcion":"descripción breve del proyecto","señales":"señal1; señal2; señal3","competidores":"competidor1; competidor2","ai_insight":"recomendación estratégica para empresa de explosivos","prioridad":"critical|high|medium|low","contacto":"entidad responsable","url_fuente":"url si disponible","ultima_actualizacion":"${new Date().toISOString()}"}
+
+IMPORTANTE:
+- Solo incluye proyectos que genuinamente podrían necesitar explosivos o voladura
+- Asigna prob_voladura realista (0-100) basado en el tipo de obra
+- No incluyas proyectos que ya estén en esta lista: ${existingTitles.join(", ")}
+- Si no encuentras noticias relevantes nuevas, responde: []
+- Responde SOLO el array JSON, nada más`;
+
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": claudeKey,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4000,
+        tools: [{type: "web_search_20250305", name: "web_search"}],
+        messages: [{role: "user", content: prompt}]
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`API ${res.status}: ${err}`);
+    }
+
+    const data = await res.json();
+    
+    // Extract text from response (may have multiple content blocks due to tool use)
+    let fullText = "";
+    for (const block of data.content) {
+      if (block.type === "text") {
+        fullText += block.text;
+      }
+    }
+    
+    // Parse JSON from response
+    const cleaned = fullText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    
+    // Try to find array in the text
+    const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+    if (arrayMatch) {
+      const parsed = JSON.parse(arrayMatch[0]);
+      return { success: true, projects: parsed, raw: fullText };
+    }
+    
+    // If empty result
+    if (cleaned === "[]") {
+      return { success: true, projects: [], raw: fullText };
+    }
+    
+    // Try parsing as single object
+    const objMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (objMatch) {
+      const parsed = JSON.parse(objMatch[0]);
+      return { success: true, projects: parsed.relevante === false ? [] : [parsed], raw: fullText };
+    }
+
+    return { success: true, projects: [], raw: fullText };
+  } catch (err) {
+    return { success: false, error: err.message, projects: [] };
+  }
+}
+
+// ===== COMPONENTS =====
+function Gauge({value,size=48}){
+  const r=(size-6)/2,c=Math.PI*2*r,off=c-(value/100)*c;
+  const col=value>=80?C.ok:value>=60?C.hi:C.md;
+  return React.createElement("div",{style:{position:"relative",width:size,height:size}},
+    React.createElement("svg",{width:size,height:size,style:{transform:"rotate(-90deg)"}},
+      React.createElement("circle",{cx:size/2,cy:size/2,r,fill:"none",stroke:C.brd,strokeWidth:"3"}),
+      React.createElement("circle",{cx:size/2,cy:size/2,r,fill:"none",stroke:col,strokeWidth:"3",strokeDasharray:c,strokeDashoffset:off,strokeLinecap:"round",style:{transition:"stroke-dashoffset .8s"}})
+    ),
+    React.createElement("span",{style:{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,fontFamily:F.m,color:col}},value+"%")
+  );
+}
+
+function Bars({data,dk,color,h=80}){
+  const mx=Math.max(...data.map(d=>d[dk]),1);
+  return React.createElement("div",{style:{display:"flex",alignItems:"flex-end",gap:3,height:h,width:"100%"}},
+    data.map((d,i)=>React.createElement("div",{key:i,style:{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}},
+      React.createElement("div",{style:{width:"100%",maxWidth:28,height:`${(d[dk]/mx)*100}%`,minHeight:3,background:`linear-gradient(180deg,${color},${color}88)`,borderRadius:"3px 3px 0 0",transition:"height .5s"}}),
+      React.createElement("span",{style:{fontSize:9,color:C.txD,fontFamily:F.m}},d.month)
+    ))
+  );
+}
+
+function Modal({project:p,onClose}){
+  if(!p)return null;
+  return React.createElement("div",{onClick:onClose,style:{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(8px)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:20}},
+    React.createElement("div",{onClick:e=>e.stopPropagation(),style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:16,maxWidth:680,width:"100%",maxHeight:"85vh",overflow:"auto"}},
+      React.createElement("div",{style:{padding:"24px 28px",borderBottom:`1px solid ${C.brd}`,display:"flex",justifyContent:"space-between",alignItems:"flex-start"}},
+        React.createElement("div",null,
+          React.createElement("div",{style:{display:"flex",gap:10,alignItems:"center",marginBottom:8}},
+            React.createElement("span",{style:{fontSize:10,fontFamily:F.m,color:pC(p.priority),background:pB(p.priority),padding:"3px 8px",borderRadius:4,textTransform:"uppercase",fontWeight:700,letterSpacing:1}},p.priority),
+            React.createElement("span",{style:{fontSize:11,color:C.txM,fontFamily:F.m}},p.id)
+          ),
+          React.createElement("h2",{style:{fontSize:18,fontWeight:700,color:C.tx,fontFamily:F.h,margin:0,lineHeight:1.3}},p.title)
+        ),
+        React.createElement("button",{onClick:onClose,style:{background:"none",border:"none",color:C.txM,cursor:"pointer",padding:4,fontSize:20}},"✕")
+      ),
+      React.createElement("div",{style:{padding:"24px 28px"}},
+        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12,marginBottom:24}},
+          [{l:"Valor",v:fmt(p.estimatedValue)},{l:"Voladura",v:p.blastingProbability+"%"},{l:"Inicio",v:p.estimatedStart||"TBD"},{l:"Región",v:p.province}].map((m,i)=>
+            React.createElement("div",{key:i,style:{background:C.bg,borderRadius:8,padding:"12px 14px",textAlign:"center"}},
+              React.createElement("div",{style:{fontSize:9,color:C.txD,textTransform:"uppercase",letterSpacing:1,fontFamily:F.m,marginBottom:4}},m.l),
+              React.createElement("div",{style:{fontSize:16,fontWeight:700,color:C.acc,fontFamily:F.m}},m.v)
+            ))
+        ),
+        React.createElement("div",{style:{background:`linear-gradient(135deg,${C.accG},transparent)`,border:`1px solid ${C.acc}33`,borderRadius:10,padding:16,marginBottom:20}},
+          React.createElement("div",{style:{fontSize:11,fontWeight:700,color:C.acc,fontFamily:F.m,marginBottom:8,textTransform:"uppercase",letterSpacing:1}},"⚡ ANÁLISIS AI"),
+          React.createElement("p",{style:{fontSize:13,color:C.tx,lineHeight:1.6,fontFamily:F.b,margin:0}},p.aiInsight)
+        ),
+        React.createElement("div",{style:{marginBottom:20}},
+          React.createElement("div",{style:{fontSize:11,color:C.txD,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1,marginBottom:8}},"DESCRIPCIÓN"),
+          React.createElement("p",{style:{fontSize:13,color:C.txM,lineHeight:1.6,fontFamily:F.b,margin:0}},p.description)
+        ),
+        p.signals&&p.signals.length>0&&React.createElement("div",{style:{marginBottom:20}},
+          React.createElement("div",{style:{fontSize:11,color:C.txD,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1,marginBottom:10}},"SEÑALES"),
+          p.signals.map((s,i)=>React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",background:C.bg,borderRadius:6,marginBottom:4}},
+            React.createElement("div",{style:{width:6,height:6,borderRadius:"50%",background:C.ok,flexShrink:0}}),
+            React.createElement("span",{style:{fontSize:12,color:C.tx,fontFamily:F.b}},s)
+          ))
+        ),
+        React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}},
+          React.createElement("div",null,
+            React.createElement("div",{style:{fontSize:11,color:C.txD,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1,marginBottom:8}},"COMPETENCIA"),
+            (p.competitors||[]).map((c,i)=>React.createElement("div",{key:i,style:{fontSize:12,color:C.txM,fontFamily:F.b,padding:"4px 0"}},"→ "+c))
+          ),
+          React.createElement("div",null,
+            React.createElement("div",{style:{fontSize:11,color:C.txD,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1,marginBottom:8}},"CONTACTO"),
+            React.createElement("div",{style:{fontSize:12,color:C.acc,fontFamily:F.b}},p.contactLead||"Por identificar")
+          )
+        )
+      )
+    )
+  );
+}
+
+// ===== SCANNER COMPONENT =====
+function Scanner({claudeKey, projects, onNewProjects}){
+  const[scanning,setScanning]=useState(false);
+  const[log,setLog]=useState([]);
+  const[found,setFound]=useState([]);
+  const[autoEnabled,setAutoEnabled]=useState(false);
+  const intervalRef=useRef(null);
+  
+  const addLog=(msg,type="info")=>setLog(prev=>[{msg,type,time:new Date().toLocaleTimeString("es-DO",{hour:"2-digit",minute:"2-digit",second:"2-digit"})},...prev].slice(0,50));
+
+  const runScan=useCallback(async()=>{
+    if(scanning||!claudeKey)return;
+    setScanning(true);
+    addLog("Iniciando escaneo de noticias...","scan");
+    addLog("Buscando: infraestructura, licitaciones, canteras, presas, carreteras RD","search");
+    
+    const existingTitles=projects.map(p=>p.title);
+    const result=await scanNews(claudeKey,existingTitles);
+    
+    if(result.success){
+      if(result.projects.length>0){
+        addLog(`✅ ${result.projects.length} proyecto(s) nuevo(s) detectado(s)`,"success");
+        const newProjects=result.projects.map(p=>({
+          ...p,
+          estimatedValue:p.valor_estimado||0,
+          blastingProbability:p.prob_voladura||50,
+          province:p.provincia||"",
+          contactLead:p.contacto||"",
+          signals:typeof p.señales==="string"?p.señales.split(";").map(s=>s.trim()).filter(Boolean):p.señales||[],
+          competitors:typeof p.competidores==="string"?p.competidores.split(";").map(s=>s.trim()).filter(Boolean):p.competidores||[],
+          aiInsight:p.ai_insight||"",
+          detectedDate:p.fecha_deteccion||new Date().toISOString().split("T")[0],
+          estimatedStart:p.inicio_estimado||"",
+          source:p.fuente||"Scanner AI"
+        }));
+        setFound(prev=>[...newProjects,...prev]);
+        onNewProjects(newProjects);
+        newProjects.forEach(p=>addLog(`→ ${p.titulo}: ${p.tipo} | ${p.provincia} | Voladura: ${p.prob_voladura||p.blastingProbability}%`,"project"));
+      }else{
+        addLog("No se encontraron proyectos nuevos relevantes","info");
+      }
+    }else{
+      addLog(`❌ Error: ${result.error}`,"error");
+    }
+    
+    addLog("Escaneo completado","scan");
+    setScanning(false);
+  },[claudeKey,projects,scanning,onNewProjects]);
+
+  // Auto scan
+  useEffect(()=>{
+    if(autoEnabled&&claudeKey){
+      addLog("⏰ Auto-escaneo activado: cada 4 horas","auto");
+      intervalRef.current=setInterval(runScan,4*60*60*1000);
+      return()=>clearInterval(intervalRef.current);
+    }else{
+      if(intervalRef.current)clearInterval(intervalRef.current);
+    }
+  },[autoEnabled,claudeKey]);
+
+  const logColors={info:C.txM,scan:C.acc,search:C.md,success:C.ok,error:C.cr,project:C.hi,auto:C.md};
+
+  return React.createElement("div",{style:{animation:"slideIn .3s ease",height:"100%",display:"flex",flexDirection:"column"}},
+    // Header
+    React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}},
+      React.createElement("div",null,
+        React.createElement("h2",{style:{fontSize:14,fontWeight:700,fontFamily:F.h,color:C.tx,marginBottom:4}},"Escáner de Noticias AI"),
+        React.createElement("p",{style:{fontSize:12,color:C.txM,fontFamily:F.b}},
+          claudeKey?"Claude busca noticias de infraestructura, analiza relevancia y detecta oportunidades":"⚠ Configura tu API Key de Claude en el tab Conexión"
+        )
+      ),
+      React.createElement("div",{style:{display:"flex",gap:10,alignItems:"center"}},
+        // Auto toggle
+        React.createElement("div",{onClick:()=>claudeKey&&setAutoEnabled(!autoEnabled),style:{display:"flex",alignItems:"center",gap:8,padding:"8px 14px",background:autoEnabled?C.okBg:C.bg,border:`1px solid ${autoEnabled?C.ok+"44":C.brd}`,borderRadius:8,cursor:claudeKey?"pointer":"not-allowed",opacity:claudeKey?1:.4}},
+          React.createElement("div",{style:{width:36,height:20,borderRadius:10,background:autoEnabled?C.ok:C.brd,display:"flex",alignItems:"center",padding:2,justifyContent:autoEnabled?"flex-end":"flex-start",transition:"all .2s"}},
+            React.createElement("div",{style:{width:16,height:16,borderRadius:"50%",background:"#fff",transition:"all .2s"}})
+          ),
+          React.createElement("span",{style:{fontSize:11,fontFamily:F.m,color:autoEnabled?C.ok:C.txM}},"Auto 4h")
+        ),
+        // Scan button
+        React.createElement("button",{onClick:runScan,disabled:scanning||!claudeKey,style:{background:scanning?"transparent":C.acc,border:scanning?`2px solid ${C.acc}`:"2px solid transparent",borderRadius:10,padding:"10px 24px",fontSize:13,fontWeight:700,color:scanning?C.acc:C.bg,fontFamily:F.m,cursor:scanning||!claudeKey?"not-allowed":"pointer",display:"flex",alignItems:"center",gap:8,animation:scanning?"scanPulse 2s infinite":"none",opacity:claudeKey?1:.4}},
+          scanning&&React.createElement("span",{style:{display:"inline-flex",animation:"spin 1s linear infinite"}},"⟳"),
+          scanning?"ESCANEANDO...":"⚡ ESCANEAR AHORA"
+        )
+      )
+    ),
+    
+    // Stats
+    found.length>0&&React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:16}},
+      [{l:"Detectados Hoy",v:found.length,c:C.ok},{l:"Alta Prioridad",v:found.filter(p=>p.prioridad==="critical"||p.prioridad==="high"||p.priority==="critical"||p.priority==="high").length,c:C.hi},{l:"Valor Detectado",v:fmt(found.reduce((s,p)=>s+(p.valor_estimado||p.estimatedValue||0),0)),c:C.acc}].map((k,i)=>
+        React.createElement("div",{key:i,style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:"14px 16px",textAlign:"center"}},
+          React.createElement("div",{style:{fontSize:9,color:C.txD,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1,marginBottom:4}},k.l),
+          React.createElement("div",{style:{fontSize:22,fontWeight:700,color:k.c,fontFamily:F.m}},k.v)
+        )
+      )
+    ),
+
+    // Log
+    React.createElement("div",{style:{flex:1,background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,overflow:"hidden",display:"flex",flexDirection:"column"}},
+      React.createElement("div",{style:{padding:"12px 16px",borderBottom:`1px solid ${C.brd}`,display:"flex",justifyContent:"space-between",alignItems:"center"}},
+        React.createElement("span",{style:{fontSize:11,color:C.txD,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1}},"ACTIVIDAD DEL ESCÁNER"),
+        log.length>0&&React.createElement("button",{onClick:()=>setLog([]),style:{background:"none",border:"none",color:C.txD,fontSize:10,fontFamily:F.m,cursor:"pointer"}},"Limpiar")
+      ),
+      React.createElement("div",{style:{flex:1,overflow:"auto",padding:"8px 16px"}},
+        log.length===0?
+          React.createElement("div",{style:{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",color:C.txD,fontFamily:F.b,fontSize:13}},"Dale click a \"Escanear Ahora\" para buscar oportunidades"):
+          log.map((l,i)=>React.createElement("div",{key:i,style:{display:"flex",gap:10,padding:"6px 0",borderBottom:`1px solid ${C.brd}11`,animation:`slideIn .2s ease`}},
+            React.createElement("span",{style:{fontSize:10,color:C.txD,fontFamily:F.m,flexShrink:0,marginTop:2}},l.time),
+            React.createElement("span",{style:{fontSize:12,color:logColors[l.type]||C.txM,fontFamily:l.type==="project"?F.m:F.b,lineHeight:1.4}},l.msg)
+          ))
+      )
+    )
+  );
+}
+
+// ===== AI CHAT =====
+function AIChat({projects,claudeKey}){
+  const[msgs,setMsgs]=useState([{role:"assistant",content:"Soy tu analista de inteligencia de mercado. Pregúntame sobre el pipeline, estrategias, competidores, o priorización."}]);
+  const[inp,setInp]=useState("");
+  const[loading,setLoading]=useState(false);
+  const ref=useRef(null);
+  useEffect(()=>{if(ref.current)ref.current.scrollTop=ref.current.scrollHeight},[msgs]);
+  
+  const send=useCallback(async()=>{
+    if(!inp.trim()||loading)return;
+    const txt=inp.trim();setInp("");
+    setMsgs(p=>[...p,{role:"user",content:txt}]);setLoading(true);
+    try{
+      if(!claudeKey)throw new Error("No API key");
+      const ctx=projects.slice(0,6).map(p=>`- ${p.title}|${p.type}|${p.province}|${fmt(p.estimatedValue)}|Vol:${p.blastingProbability}%|${p.priority}`).join("\n");
+      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",
+        headers:{"Content-Type":"application/json","x-api-key":claudeKey,"anthropic-version":"2023-06-01"},
+        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
+          system:`Eres analista experto de mercado para empresa de explosivos en RD. Pipeline actual:\n${ctx}\nCompetencia: MAXAM 35%, Expl.Caribe 25%, Austin 15%, Nosotros 18%. Revenue trending $45K→$95K. Win rate 86%. Responde en español, conciso y accionable.`,
+          messages:[...msgs.filter((m,i)=>!(m.role==="assistant"&&i===0)).map(m=>({role:m.role,content:m.content})),{role:"user",content:txt}]
+        })});
+      if(!res.ok)throw new Error();
+      const data=await res.json();
+      setMsgs(p=>[...p,{role:"assistant",content:data.content?.map(i=>i.text||"").join("\n")||"Error."}]);
+    }catch{setMsgs(p=>[...p,{role:"assistant",content:"⚠ Configura tu API Key de Claude en el tab Conexión para usar el AI Analyst."}]);}
+    setLoading(false);
+  },[inp,loading,msgs,projects,claudeKey]);
+
+  const quicks=["¿Qué proyecto priorizo?","Estrategia vs MAXAM","Forecast 3 meses","Riesgos del pipeline"];
+  return React.createElement("div",{style:{display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}},
+    React.createElement("div",{ref,style:{flex:1,overflow:"auto",padding:"16px 20px",display:"flex",flexDirection:"column",gap:12}},
+      msgs.map((m,i)=>React.createElement("div",{key:i,style:{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}},
+        React.createElement("div",{style:{maxWidth:"85%",padding:"10px 14px",borderRadius:m.role==="user"?"12px 12px 2px 12px":"12px 12px 12px 2px",background:m.role==="user"?C.acc+"22":C.bg,border:`1px solid ${m.role==="user"?C.acc+"33":C.brd}`,fontSize:12.5,color:C.tx,fontFamily:F.b,lineHeight:1.6,whiteSpace:"pre-wrap"}},m.content)
+      )),
+      loading&&React.createElement("div",{style:{display:"flex",gap:4,padding:"10px 14px"}},[0,1,2].map(i=>React.createElement("div",{key:i,style:{width:7,height:7,borderRadius:"50%",background:C.acc,animation:`pulse 1.2s ease-in-out ${i*.2}s infinite`}})))
+    ),
+    msgs.length<=2&&React.createElement("div",{style:{padding:"0 16px 8px",display:"flex",flexWrap:"wrap",gap:6}},
+      quicks.map((q,i)=>React.createElement("button",{key:i,onClick:()=>setInp(q),style:{background:C.bg,border:`1px solid ${C.brd}`,borderRadius:20,padding:"5px 12px",fontSize:11,color:C.txM,fontFamily:F.b,cursor:"pointer"}},q))
+    ),
+    React.createElement("div",{style:{padding:"12px 16px",borderTop:`1px solid ${C.brd}`,display:"flex",gap:8}},
+      React.createElement("input",{value:inp,onChange:e=>setInp(e.target.value),onKeyDown:e=>e.key==="Enter"&&send(),placeholder:"Pregunta al AI Analyst...",style:{flex:1,background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",fontSize:13,color:C.tx,fontFamily:F.b,outline:"none"}}),
+      React.createElement("button",{onClick:send,style:{background:loading?C.brd:C.acc,border:"none",borderRadius:8,padding:"10px 18px",fontSize:12,fontWeight:700,color:C.bg,fontFamily:F.m,cursor:loading?"wait":"pointer"}},loading?"...":"ENVIAR")
+    )
+  );
+}
+
+// ===== MAIN APP =====
+function App(){
+  const[tab,setTab]=useState("dashboard");
+  const[sel,setSel]=useState(null);
+  const[search,setSearch]=useState("");
+  const[filter,setFilter]=useState("all");
+  const[projects,setProjects]=useState([]);
+  const[competitors,setCompetitors]=useState([]);
+  const[historical,setHistorical]=useState([]);
+  const[config,setConfig]=useState({apiKey:"",sheetId:"",claudeKey:"",connected:false});
+  const[dataMode,setDataMode]=useState("loading");
+  const[lastRefresh,setLastRefresh]=useState(null);
+  const[showAlerts,setShowAlerts]=useState(false);
+  const[alerts,setAlerts]=useState([]);
+
+  // Load from sheets
+  const refresh=useCallback(async()=>{
+    if(!config.apiKey||!config.sheetId)return;
+    const[projRows,compRows,histRows]=await Promise.all([
+      fetchSheet(config.apiKey,config.sheetId,"Proyectos","A1:S100"),
+      fetchSheet(config.apiKey,config.sheetId,"Competidores","A1:F20"),
+      fetchSheet(config.apiKey,config.sheetId,"Historico","A1:D50")
+    ]);
+    const p=parseProjects(projRows);if(p&&p.length)setProjects(p);
+    const c=parseCompetitors(compRows);if(c&&c.length)setCompetitors(c);
+    const h=parseHistorical(histRows);if(h&&h.length)setHistorical(h);
+    if(p||c||h){setDataMode("live");setLastRefresh(new Date());}
+  },[config.apiKey,config.sheetId]);
+
+  useEffect(()=>{
+    if(config.connected)refresh();
+    const iv=config.connected?setInterval(refresh,240000):null;
+    return()=>{if(iv)clearInterval(iv)};
+  },[config.connected,refresh]);
+
+  // Handle new projects from scanner
+  const handleNewProjects=useCallback((newProjects)=>{
+    setProjects(prev=>{
+      const existingIds=prev.map(p=>p.title.toLowerCase());
+      const genuinelyNew=newProjects.filter(p=>!existingIds.includes((p.titulo||p.title||"").toLowerCase()));
+      const formatted=genuinelyNew.map(p=>({
+        id:p.id||"PRJ-NEW",title:p.titulo||p.title||"",source:p.fuente||p.source||"Scanner AI",
+        type:p.tipo||p.type||"",region:p.region||"",province:p.provincia||p.province||"",
+        estimatedValue:p.valor_estimado||p.estimatedValue||0,
+        blastingProbability:p.prob_voladura||p.blastingProbability||50,
+        detectedDate:p.fecha_deteccion||new Date().toISOString().split("T")[0],
+        estimatedStart:p.inicio_estimado||p.estimatedStart||"",status:p.status||"detectado",
+        description:p.descripcion||p.description||"",
+        signals:typeof p.señales==="string"?p.señales.split(";").map(s=>s.trim()).filter(Boolean):p.signals||[],
+        competitors:typeof p.competidores==="string"?p.competidores.split(";").map(s=>s.trim()).filter(Boolean):p.competitors||[],
+        aiInsight:p.ai_insight||p.aiInsight||"",priority:p.prioridad||p.priority||"medium",
+        contactLead:p.contacto||p.contactLead||""
+      }));
+      if(formatted.length>0){
+        setAlerts(a=>[...formatted.map((p,i)=>({id:Date.now()+i,text:`Nuevo: ${p.title}`,time:"Ahora",read:false})),...a]);
+      }
+      return[...prev,...formatted];
+    });
+  },[]);
+
+  const filtered=projects.filter(p=>{
+    const ms=!search||p.title?.toLowerCase().includes(search.toLowerCase())||p.province?.toLowerCase().includes(search.toLowerCase())||p.type?.toLowerCase().includes(search.toLowerCase());
+    return ms&&(filter==="all"||p.priority===filter);
+  });
+  const totVal=projects.reduce((s,p)=>s+(p.estimatedValue||0),0);
+  const critN=projects.filter(p=>p.priority==="critical").length;
+  const avgB=Math.round(projects.reduce((s,p)=>s+(p.blastingProbability||0),0)/(projects.length||1));
+  const lastWR=historical.length?historical[historical.length-1].winRate:0;
+
+  const navs=[
+    {id:"dashboard",label:"Dashboard",ico:"📊"},
+    {id:"pipeline",label:"Pipeline",ico:"📋"},
+    {id:"scanner",label:"Escáner",ico:"🔍"},
+    {id:"competitors",label:"Competencia",ico:"👥"},
+    {id:"ai",label:"AI Analyst",ico:"🧠"},
+    {id:"settings",label:"Conexión",ico:"⚙️"}
+  ];
+
+  const hr=(e,on)=>{e.currentTarget.style.background=on?C.hover:"transparent"};
+
+  return React.createElement("div",{style:{fontFamily:F.b,background:C.bg,color:C.tx,height:"100vh",display:"flex",overflow:"hidden"}},
+    React.createElement("style",null,`@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');`),
+
+    // SIDEBAR
+    React.createElement("div",{style:{width:210,background:C.side,borderRight:`1px solid ${C.brd}`,display:"flex",flexDirection:"column",flexShrink:0}},
+      React.createElement("div",{style:{padding:"20px 16px",borderBottom:`1px solid ${C.brd}`}},
+        React.createElement("div",{style:{display:"flex",alignItems:"center",gap:10}},
+          React.createElement("div",{style:{width:32,height:32,borderRadius:8,background:`linear-gradient(135deg,${C.acc},#d97706)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}},"⚡"),
+          React.createElement("div",null,
+            React.createElement("div",{style:{fontSize:13,fontWeight:700,fontFamily:F.h,color:C.tx}},"BLASTIQ"),
+            React.createElement("div",{style:{fontSize:9,color:C.txD,fontFamily:F.m,letterSpacing:1}},"MARKET INTEL v3")
+          )
+        )
+      ),
+      React.createElement("nav",{style:{flex:1,padding:"12px 8px"}},
+        navs.map(n=>React.createElement("button",{key:n.id,onClick:()=>setTab(n.id),style:{display:"flex",alignItems:"center",gap:10,width:"100%",padding:"10px 12px",marginBottom:2,background:tab===n.id?C.accG:"transparent",border:tab===n.id?`1px solid ${C.acc}33`:"1px solid transparent",borderRadius:8,cursor:"pointer",color:tab===n.id?C.acc:C.txM,fontFamily:F.b,fontSize:13,fontWeight:tab===n.id?600:400}},
+          React.createElement("span",{style:{fontSize:15}},n.ico),n.label,
+          n.id==="scanner"&&config.claudeKey&&React.createElement("span",{style:{marginLeft:"auto",width:6,height:6,borderRadius:"50%",background:C.ok}})
+        ))
+      ),
+      React.createElement("div",{style:{padding:"12px"}},
+        React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:C.bg,borderRadius:8,border:`1px solid ${C.brd}`}},
+          React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:config.connected?C.ok:C.acc,animation:config.connected?"none":"pulse 2s infinite"}}),
+          React.createElement("div",null,
+            React.createElement("div",{style:{fontSize:10,fontFamily:F.m,color:config.connected?C.ok:C.acc,fontWeight:600}},config.connected?"CONECTADO":"NO CONECTADO"),
+            React.createElement("div",{style:{fontSize:9,color:C.txD,fontFamily:F.m}},config.claudeKey?"Claude + Sheets":"Configurar →")
+          )
+        )
+      ),
+      React.createElement("div",{style:{padding:"8px 12px 16px"}},
+        React.createElement("div",{style:{background:C.bg,borderRadius:8,padding:12,border:`1px solid ${C.brd}`}},
+          React.createElement("div",{style:{fontSize:9,color:C.txD,fontFamily:F.m,letterSpacing:1,marginBottom:6}},"PIPELINE TOTAL"),
+          React.createElement("div",{style:{fontSize:20,fontWeight:700,color:C.acc,fontFamily:F.m}},fmt(totVal)),
+          React.createElement("div",{style:{fontSize:10,color:C.ok,fontFamily:F.m,marginTop:4}},"↑ "+projects.length+" proyectos")
+        )
+      )
+    ),
+
+    // MAIN
+    React.createElement("div",{style:{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}},
+      // Top
+      React.createElement("div",{style:{padding:"12px 24px",borderBottom:`1px solid ${C.brd}`,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}},
+        React.createElement("div",null,
+          React.createElement("h1",{style:{fontSize:16,fontWeight:700,fontFamily:F.h,color:C.tx}},navs.find(n=>n.id===tab)?.label),
+          React.createElement("div",{style:{fontSize:11,color:C.txD,fontFamily:F.m,marginTop:2}},
+            (dataMode==="live"?"🟢 En vivo":"⚪ Configura conexión")+" · "+new Date().toLocaleTimeString("es-DO",{hour:"2-digit",minute:"2-digit"})
+          )
+        ),
+        React.createElement("div",{style:{position:"relative"}},
+          React.createElement("button",{onClick:()=>setShowAlerts(!showAlerts),style:{background:showAlerts?C.accG:"transparent",border:`1px solid ${C.brd}`,borderRadius:8,padding:"8px 12px",cursor:"pointer",color:C.txM,fontSize:14,position:"relative"}},"🔔",
+            alerts.filter(a=>!a.read).length>0&&React.createElement("div",{style:{position:"absolute",top:-3,right:-3,width:14,height:14,borderRadius:"50%",background:C.cr,fontSize:8,fontWeight:700,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontFamily:F.m}},alerts.filter(a=>!a.read).length)
+          ),
+          showAlerts&&React.createElement("div",{style:{position:"absolute",top:"110%",right:0,width:320,background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,overflow:"hidden",zIndex:100,boxShadow:"0 12px 40px rgba(0,0,0,.4)"}},
+            React.createElement("div",{style:{padding:"12px 16px",borderBottom:`1px solid ${C.brd}`,fontSize:12,fontWeight:700,fontFamily:F.m,color:C.tx}},"ALERTAS"),
+            alerts.length===0?
+              React.createElement("div",{style:{padding:"20px 16px",fontSize:12,color:C.txD,fontFamily:F.b,textAlign:"center"}},"Sin alertas nuevas"):
+              alerts.slice(0,8).map(a=>React.createElement("div",{key:a.id,onClick:()=>setAlerts(p=>p.map(al=>al.id===a.id?{...al,read:true}:al)),style:{padding:"12px 16px",borderBottom:`1px solid ${C.brd}`,cursor:"pointer",background:a.read?"transparent":C.accG}},
+                React.createElement("div",{style:{fontSize:12,color:C.tx,fontFamily:F.b,marginBottom:4}},a.text),
+                React.createElement("div",{style:{fontSize:10,color:C.txD,fontFamily:F.m}},a.time)
+              ))
+          )
+        )
+      ),
+
+      // Content
+      React.createElement("div",{style:{flex:1,overflow:"auto",padding:tab==="ai"?0:24}},
+
+        // DASHBOARD
+        tab==="dashboard"&&React.createElement("div",{style:{animation:"slideIn .3s ease"}},
+          React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:16,marginBottom:24}},
+            [{l:"Pipeline Total",v:fmt(totVal),s:projects.length+" proyectos",c:C.acc},{l:"Alertas Críticas",v:critN,s:"Requieren acción",c:C.cr},{l:"Prob. Voladura",v:avgB+"%",s:"Promedio pipeline",c:C.ok},{l:"Win Rate",v:lastWR+"%",s:"Últimos 6 meses",c:C.md}].map((k,i)=>
+              React.createElement("div",{key:i,style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:"18px 20px"}},
+                React.createElement("div",{style:{fontSize:10,color:C.txD,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1,marginBottom:12}},k.l),
+                React.createElement("div",{style:{fontSize:26,fontWeight:700,color:k.c,fontFamily:F.m,marginBottom:4}},k.v),
+                React.createElement("div",{style:{fontSize:11,color:C.txM,fontFamily:F.b}},k.s)
+              ))
+          ),
+          historical.length>0&&React.createElement("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:24}},
+            React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:20}},
+              React.createElement("div",{style:{fontSize:11,color:C.txD,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1,marginBottom:16}},"REVENUE"),
+              React.createElement(Bars,{data:historical,dk:"revenue",color:C.acc,h:90})
+            ),
+            React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:20}},
+              React.createElement("div",{style:{fontSize:11,color:C.txD,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1,marginBottom:16}},"WIN RATE"),
+              React.createElement(Bars,{data:historical,dk:"winRate",color:C.ok,h:90})
+            )
+          ),
+          React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,overflow:"hidden"}},
+            React.createElement("div",{style:{padding:"16px 20px",borderBottom:`1px solid ${C.brd}`,display:"flex",justifyContent:"space-between"}},
+              React.createElement("span",{style:{fontSize:11,color:C.txD,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1}},"TOP OPORTUNIDADES"),
+              React.createElement("button",{onClick:()=>setTab("pipeline"),style:{background:"none",border:"none",color:C.acc,fontSize:11,fontFamily:F.m,cursor:"pointer"}},"Ver todo →")
+            ),
+            projects.filter(p=>p.priority==="critical"||p.priority==="high").slice(0,4).map((p,i)=>
+              React.createElement("div",{key:p.id||i,onClick:()=>setSel(p),style:{padding:"14px 20px",borderBottom:`1px solid ${C.brd}`,display:"flex",alignItems:"center",gap:16,cursor:"pointer"},onMouseEnter:e=>hr(e,true),onMouseLeave:e=>hr(e,false)},
+                React.createElement(Gauge,{value:p.blastingProbability||0,size:42}),
+                React.createElement("div",{style:{flex:1}},
+                  React.createElement("div",{style:{fontSize:13,fontWeight:600,color:C.tx,fontFamily:F.b,marginBottom:3}},p.title),
+                  React.createElement("div",{style:{fontSize:11,color:C.txM,fontFamily:F.m}},p.type+" · "+p.province+" · "+sL(p.status))
+                ),
+                React.createElement("div",{style:{textAlign:"right"}},
+                  React.createElement("div",{style:{fontSize:14,fontWeight:700,color:C.acc,fontFamily:F.m}},fmt(p.estimatedValue||0)),
+                  React.createElement("span",{style:{fontSize:9,fontFamily:F.m,color:pC(p.priority),background:pB(p.priority),padding:"2px 6px",borderRadius:3,textTransform:"uppercase",fontWeight:700}},p.priority)
+                )
+              )
+            ),
+            projects.length===0&&React.createElement("div",{style:{padding:"40px 20px",textAlign:"center",color:C.txD,fontFamily:F.b,fontSize:13}},"Conecta tu Google Sheet en el tab Conexión para ver datos")
+          )
+        ),
+
+        // PIPELINE
+        tab==="pipeline"&&React.createElement("div",{style:{animation:"slideIn .3s ease"}},
+          React.createElement("div",{style:{display:"flex",gap:12,marginBottom:20,alignItems:"center",flexWrap:"wrap"}},
+            React.createElement("input",{value:search,onChange:e=>setSearch(e.target.value),placeholder:"🔍 Buscar proyecto...",style:{flex:1,maxWidth:360,background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",fontSize:13,color:C.tx,fontFamily:F.b,outline:"none"}}),
+            ["all","critical","high","medium"].map(p=>
+              React.createElement("button",{key:p,onClick:()=>setFilter(p),style:{background:filter===p?(p==="all"?C.accG:pB(p)):"transparent",border:`1px solid ${filter===p?(p==="all"?C.acc+"44":pC(p)+"44"):C.brd}`,borderRadius:6,padding:"7px 14px",fontSize:11,fontFamily:F.m,color:filter===p?(p==="all"?C.acc:pC(p)):C.txM,cursor:"pointer",textTransform:"capitalize",fontWeight:filter===p?700:400}},p==="all"?"Todos":p)
+            )
+          ),
+          filtered.map((p,i)=>
+            React.createElement("div",{key:p.id||i,onClick:()=>setSel(p),style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:"16px 20px",display:"flex",alignItems:"center",gap:16,cursor:"pointer",marginBottom:10,animation:`slideIn .3s ease ${i*.04}s both`},onMouseEnter:e=>{e.currentTarget.style.background=C.hover},onMouseLeave:e=>{e.currentTarget.style.background=C.card}},
+              React.createElement(Gauge,{value:p.blastingProbability||0}),
+              React.createElement("div",{style:{flex:1}},
+                React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:4}},
+                  React.createElement("span",{style:{fontSize:9,fontFamily:F.m,color:pC(p.priority),background:pB(p.priority),padding:"2px 6px",borderRadius:3,textTransform:"uppercase",fontWeight:700}},p.priority),
+                  React.createElement("span",{style:{fontSize:10,color:C.txD,fontFamily:F.m}},p.id)
+                ),
+                React.createElement("div",{style:{fontSize:14,fontWeight:600,color:C.tx,fontFamily:F.b,marginBottom:4}},p.title),
+                React.createElement("div",{style:{fontSize:11,color:C.txM,fontFamily:F.m}},(p.type||"")+" · "+(p.province||"")+" · "+(p.source||""))
+              ),
+              React.createElement("div",{style:{textAlign:"right",flexShrink:0}},
+                React.createElement("div",{style:{fontSize:16,fontWeight:700,color:C.acc,fontFamily:F.m,marginBottom:4}},fmt(p.estimatedValue||0)),
+                React.createElement("div",{style:{fontSize:10,color:C.txM,fontFamily:F.m,background:C.bg,padding:"3px 8px",borderRadius:4,display:"inline-block"}},sL(p.status))
+              )
+            )
+          )
+        ),
+
+        // SCANNER
+        tab==="scanner"&&React.createElement(Scanner,{claudeKey:config.claudeKey,projects,onNewProjects:handleNewProjects}),
+
+        // COMPETITORS
+        tab==="competitors"&&React.createElement("div",{style:{animation:"slideIn .3s ease"}},
+          competitors.length>0?React.createElement(React.Fragment,null,
+            React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:24,marginBottom:20}},
+              React.createElement("div",{style:{fontSize:11,color:C.txD,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1,marginBottom:20}},"MARKET SHARE"),
+              React.createElement("div",{style:{display:"flex",borderRadius:8,overflow:"hidden",height:36,marginBottom:16}},
+                competitors.map((c,i)=>{const cols=[C.cr,C.hi,C.md,C.ok,C.txD];return React.createElement("div",{key:i,style:{width:c.marketShare+"%",background:cols[i%5],display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,fontFamily:F.m,color:"#fff"}},c.marketShare+"%")})
+              ),
+              React.createElement("div",{style:{display:"flex",flexWrap:"wrap",gap:16}},
+                competitors.map((c,i)=>{const cols=[C.cr,C.hi,C.md,C.ok,C.txD];return React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",gap:8}},React.createElement("div",{style:{width:10,height:10,borderRadius:2,background:cols[i%5]}}),React.createElement("span",{style:{fontSize:11,color:C.txM,fontFamily:F.b}},c.name))})
+              )
+            ),
+            React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,overflow:"hidden"}},
+              competitors.map((c,i)=>
+                React.createElement("div",{key:i,style:{padding:"14px 20px",borderBottom:`1px solid ${C.brd}`,display:"flex",alignItems:"center",gap:20},onMouseEnter:e=>hr(e,true),onMouseLeave:e=>hr(e,false)},
+                  React.createElement("div",{style:{width:160,fontSize:13,fontWeight:c.name==="Nosotros"?700:400,color:c.name==="Nosotros"?C.acc:C.tx,fontFamily:F.b}},c.name),
+                  React.createElement("div",{style:{flex:1,display:"flex",alignItems:"center",gap:8}},
+                    React.createElement("div",{style:{width:100,height:6,background:C.bg,borderRadius:3,overflow:"hidden"}},React.createElement("div",{style:{width:c.marketShare+"%",height:"100%",background:c.name==="Nosotros"?C.acc:C.txM,borderRadius:3}})),
+                    React.createElement("span",{style:{fontSize:12,fontFamily:F.m,color:C.txM}},c.marketShare+"%")
+                  ),
+                  React.createElement("div",{style:{width:70}},
+                    c.threat!=="-"?React.createElement("span",{style:{fontSize:10,fontFamily:F.m,padding:"3px 8px",borderRadius:4,fontWeight:700,textTransform:"uppercase",color:c.threat==="high"?C.cr:c.threat==="medium"?C.hi:C.txD,background:c.threat==="high"?C.crBg:c.threat==="medium"?C.hiBg:C.bg}},c.threat):
+                    React.createElement("span",{style:{fontSize:10,fontFamily:F.m,color:C.acc}},"— TÚ —")
+                  )
+                )
+              )
+            )
+          ):React.createElement("div",{style:{textAlign:"center",padding:40,color:C.txD}},"Conecta tu Google Sheet para ver datos de competencia")
+        ),
+
+        // AI
+        tab==="ai"&&React.createElement("div",{style:{height:"100%"}},React.createElement(AIChat,{projects,claudeKey:config.claudeKey})),
+
+        // SETTINGS
+        tab==="settings"&&React.createElement("div",{style:{animation:"slideIn .3s ease",maxWidth:600}},
+          React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:24,marginBottom:16}},
+            React.createElement("h3",{style:{fontSize:14,fontWeight:700,fontFamily:F.h,color:C.tx,marginBottom:4}},"Google Sheets"),
+            React.createElement("p",{style:{fontSize:12,color:C.txM,fontFamily:F.b,marginBottom:16}},"Para leer los datos de tu pipeline"),
+            React.createElement("div",{style:{marginBottom:12}},
+              React.createElement("label",{style:{display:"block",fontSize:11,color:C.txD,fontFamily:F.m,letterSpacing:1,marginBottom:6}},"SHEETS API KEY"),
+              React.createElement("input",{type:"password",value:config.apiKey,onChange:e=>setConfig(c=>({...c,apiKey:e.target.value})),placeholder:"AIzaSy...",style:{width:"100%",background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",fontSize:13,color:C.tx,fontFamily:F.m,outline:"none"}})
+            ),
+            React.createElement("div",{style:{marginBottom:16}},
+              React.createElement("label",{style:{display:"block",fontSize:11,color:C.txD,fontFamily:F.m,letterSpacing:1,marginBottom:6}},"SPREADSHEET ID"),
+              React.createElement("input",{value:config.sheetId,onChange:e=>setConfig(c=>({...c,sheetId:e.target.value})),placeholder:"El ID de tu Google Sheet",style:{width:"100%",background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",fontSize:13,color:C.tx,fontFamily:F.m,outline:"none"}})
+            ),
+            React.createElement("button",{onClick:()=>{if(config.apiKey&&config.sheetId)setConfig(c=>({...c,connected:!c.connected}))},style:{background:config.connected?C.crBg:C.accG,border:`1px solid ${config.connected?C.cr+"44":C.acc+"44"}`,borderRadius:8,padding:"10px 20px",fontSize:12,fontWeight:700,color:config.connected?C.cr:C.acc,fontFamily:F.m,cursor:"pointer",opacity:!config.apiKey||!config.sheetId?.4:1}},config.connected?"⏹ Desconectar Sheets":"▶ Conectar Sheets")
+          ),
+          React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:24,marginBottom:16}},
+            React.createElement("h3",{style:{fontSize:14,fontWeight:700,fontFamily:F.h,color:C.tx,marginBottom:4}},"Claude AI"),
+            React.createElement("p",{style:{fontSize:12,color:C.txM,fontFamily:F.b,marginBottom:16}},"Para el Escáner de noticias y el AI Analyst"),
+            React.createElement("div",{style:{marginBottom:16}},
+              React.createElement("label",{style:{display:"block",fontSize:11,color:C.txD,fontFamily:F.m,letterSpacing:1,marginBottom:6}},"CLAUDE API KEY"),
+              React.createElement("input",{type:"password",value:config.claudeKey,onChange:e=>setConfig(c=>({...c,claudeKey:e.target.value})),placeholder:"sk-ant-...",style:{width:"100%",background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",fontSize:13,color:C.tx,fontFamily:F.m,outline:"none"}})
+            ),
+            React.createElement("div",{style:{padding:12,background:config.claudeKey?C.okBg:C.bg,border:`1px solid ${config.claudeKey?C.ok+"33":C.brd}`,borderRadius:8}},
+              React.createElement("div",{style:{fontSize:12,color:config.claudeKey?C.ok:C.txD,fontFamily:F.m,fontWeight:600}},config.claudeKey?"✓ Claude configurado — Escáner y AI Analyst listos":"Pega tu key de console.anthropic.com")
+            )
+          ),
+          React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:24}},
+            React.createElement("h3",{style:{fontSize:14,fontWeight:700,fontFamily:F.h,color:C.tx,marginBottom:16}},"¿Cómo funciona ahora?"),
+            [{s:"1",t:"Tú le das click a Escanear",d:"En el tab Escáner, un botón busca noticias nuevas"},{s:"2",t:"Claude busca en la web",d:"Usa web search para encontrar noticias de infraestructura RD"},{s:"3",t:"Claude analiza cada noticia",d:"Clasifica, asigna probabilidad de voladura, genera insights"},{s:"4",t:"Proyectos aparecen en el dashboard",d:"Se agregan automáticamente al pipeline"},{s:"5",t:"Activa Auto cada 4h",d:"El escáner corre solo si activas el toggle automático"}].map((s,i)=>
+              React.createElement("div",{key:i,style:{display:"flex",gap:14,padding:"10px 0",borderBottom:i<4?`1px solid ${C.brd}`:"none"}},
+                React.createElement("div",{style:{width:28,height:28,borderRadius:"50%",background:C.accG,border:`1px solid ${C.acc}33`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:C.acc,fontFamily:F.m,flexShrink:0}},s.s),
+                React.createElement("div",null,
+                  React.createElement("div",{style:{fontSize:13,fontWeight:600,color:C.tx,fontFamily:F.b}},s.t),
+                  React.createElement("div",{style:{fontSize:11,color:C.txM,fontFamily:F.b,marginTop:2}},s.d)
+                )
+              )
+            )
+          )
+        )
+      )
+    ),
+    React.createElement(Modal,{project:sel,onClose:()=>setSel(null)})
+  );
+}
+
+ReactDOM.render(React.createElement(App),document.getElementById("root"));
+</script>
+</body>
+</html>
