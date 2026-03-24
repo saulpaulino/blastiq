@@ -97,7 +97,7 @@ IMPORTANTE:
 - Responde SOLO el array JSON, nada más`;
 
   try {
-    const PROXY_URL = "https://blastiq.saulpaulino8.workers.dev";
+    const PROXY_URL = "https://yellow-paper-dc25.saulpaulino8.workers.dev";
     const res = await fetch(PROXY_URL, {
       method: "POST",
       headers: {
@@ -360,7 +360,7 @@ function AIChat({projects,claudeKey}){
     try{
       if(!claudeKey)throw new Error("No API key");
       const ctx=projects.slice(0,6).map(p=>`- ${p.title}|${p.type}|${p.province}|${fmt(p.estimatedValue)}|Vol:${p.blastingProbability}%|${p.priority}`).join("\n");
-      const PROXY_URL="https://blastiq.saulpaulino8.workers.dev";
+      const PROXY_URL="https://yellow-paper-dc25.saulpaulino8.workers.dev";
       const res=await fetch(PROXY_URL,{method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({apiKey:claudeKey,model:"claude-sonnet-4-20250514",max_tokens:1000,
