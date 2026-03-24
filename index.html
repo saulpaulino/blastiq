@@ -401,7 +401,19 @@ function App(){
   const[projects,setProjects]=useState([]);
   const[competitors,setCompetitors]=useState([]);
   const[historical,setHistorical]=useState([]);
-  const[config,setConfig]=useState({apiKey:"",sheetId:"",claudeKey:"",connected:false});
+  const savedConfig=useRef(null);
+  if(!savedConfig.current){
+    try{
+      const saved=window.localStorage.getItem("blastiq_config");
+      if(saved)savedConfig.current=JSON.parse(saved);
+    }catch(e){savedConfig.current=null;}
+  }
+  const[config,setConfig]=useState(savedConfig.current||{apiKey:"",sheetId:"",claudeKey:"",connected:false});
+  
+  // Save config whenever it changes
+  useEffect(()=>{
+    try{window.localStorage.setItem("blastiq_config",JSON.stringify(config));}catch(e){}
+  },[config]);
   const[dataMode,setDataMode]=useState("loading");
   const[lastRefresh,setLastRefresh]=useState(null);
   const[showAlerts,setShowAlerts]=useState(false);
