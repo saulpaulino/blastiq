@@ -97,14 +97,14 @@ IMPORTANTE:
 - Responde SOLO el array JSON, nada más`;
 
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const PROXY_URL = "https://blastiq.saulpaulino8.workers.dev";
+    const res = await fetch(PROXY_URL, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        "x-api-key": claudeKey,
-        "anthropic-version": "2023-06-01"
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
+        apiKey: claudeKey,
         model: "claude-sonnet-4-20250514",
         max_tokens: 4000,
         tools: [{type: "web_search_20250305", name: "web_search"}],
@@ -360,9 +360,10 @@ function AIChat({projects,claudeKey}){
     try{
       if(!claudeKey)throw new Error("No API key");
       const ctx=projects.slice(0,6).map(p=>`- ${p.title}|${p.type}|${p.province}|${fmt(p.estimatedValue)}|Vol:${p.blastingProbability}%|${p.priority}`).join("\n");
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",
-        headers:{"Content-Type":"application/json","x-api-key":claudeKey,"anthropic-version":"2023-06-01"},
-        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
+      const PROXY_URL="https://blastiq.saulpaulino8.workers.dev";
+      const res=await fetch(PROXY_URL,{method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({apiKey:claudeKey,model:"claude-sonnet-4-20250514",max_tokens:1000,
           system:`Eres analista experto de mercado para empresa de explosivos en RD. Pipeline actual:\n${ctx}\nCompetencia: MAXAM 35%, Expl.Caribe 25%, Austin 15%, Nosotros 18%. Revenue trending $45K→$95K. Win rate 86%. Responde en español, conciso y accionable.`,
           messages:[...msgs.filter((m,i)=>!(m.role==="assistant"&&i===0)).map(m=>({role:m.role,content:m.content})),{role:"user",content:txt}]
         })});
