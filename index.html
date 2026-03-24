@@ -200,6 +200,18 @@ function Modal({project:p,onClose}){
               React.createElement("div",{style:{fontSize:16,fontWeight:700,color:C.acc,fontFamily:F.m}},m.v)
             ))
         ),
+        // Date and Source
+        React.createElement("div",{style:{display:"flex",gap:12,marginBottom:20,flexWrap:"wrap",alignItems:"center"}},
+          p.detectedDate&&React.createElement("div",{style:{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:C.bg,borderRadius:6,border:`1px solid ${C.brd}`}},
+            React.createElement("span",{style:{fontSize:11,color:C.md,fontFamily:F.m}},"📅 Detectado: "+p.detectedDate)
+          ),
+          p.source&&React.createElement("div",{style:{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:C.bg,borderRadius:6,border:`1px solid ${C.brd}`}},
+            React.createElement("span",{style:{fontSize:11,color:C.txM,fontFamily:F.m}},"📰 Fuente: "+p.source)
+          ),
+          (p.url_fuente||p.urlFuente)&&React.createElement("a",{href:p.url_fuente||p.urlFuente,target:"_blank",style:{display:"flex",alignItems:"center",gap:6,padding:"6px 12px",background:C.accG,borderRadius:6,border:`1px solid ${C.acc}33`,textDecoration:"none"}},
+            React.createElement("span",{style:{fontSize:11,color:C.acc,fontFamily:F.m}},"🔗 Ver noticia original")
+          )
+        ),
         React.createElement("div",{style:{background:`linear-gradient(135deg,${C.accG},transparent)`,border:`1px solid ${C.acc}33`,borderRadius:10,padding:16,marginBottom:20}},
           React.createElement("div",{style:{fontSize:11,fontWeight:700,color:C.acc,fontFamily:F.m,marginBottom:8,textTransform:"uppercase",letterSpacing:1}},"⚡ ANÁLISIS AI"),
           React.createElement("p",{style:{fontSize:13,color:C.tx,lineHeight:1.6,fontFamily:F.b,margin:0}},p.aiInsight)
@@ -455,7 +467,8 @@ function App(){
         signals:typeof p.señales==="string"?p.señales.split(";").map(s=>s.trim()).filter(Boolean):p.signals||[],
         competitors:typeof p.competidores==="string"?p.competidores.split(";").map(s=>s.trim()).filter(Boolean):p.competitors||[],
         aiInsight:p.ai_insight||p.aiInsight||"",priority:p.prioridad||p.priority||"medium",
-        contactLead:p.contacto||p.contactLead||""
+        contactLead:p.contacto||p.contactLead||"",
+        url_fuente:p.url_fuente||p.urlFuente||""
       }));
       if(formatted.length>0){
         setAlerts(a=>[...formatted.map((p,i)=>({id:Date.now()+i,text:`Nuevo: ${p.title}`,time:"Ahora",read:false})),...a]);
@@ -610,7 +623,17 @@ function App(){
                   React.createElement("span",{style:{fontSize:10,color:C.txD,fontFamily:F.m}},p.id)
                 ),
                 React.createElement("div",{style:{fontSize:14,fontWeight:600,color:C.tx,fontFamily:F.b,marginBottom:4}},p.title),
-                React.createElement("div",{style:{fontSize:11,color:C.txM,fontFamily:F.m}},(p.type||"")+" · "+(p.province||"")+" · "+(p.source||""))
+                React.createElement("div",{style:{display:"flex",gap:8,fontSize:11,color:C.txM,fontFamily:F.m,flexWrap:"wrap",alignItems:"center"}},
+                  React.createElement("span",null,(p.type||"")),
+                  React.createElement("span",null,"·"),
+                  React.createElement("span",null,(p.province||"")),
+                  React.createElement("span",null,"·"),
+                  React.createElement("span",null,(p.source||"")),
+                  p.detectedDate&&React.createElement("span",null,"·"),
+                  p.detectedDate&&React.createElement("span",{style:{color:C.md}},"📅 "+p.detectedDate),
+                  (p.url_fuente||p.urlFuente)&&React.createElement("span",null,"·"),
+                  (p.url_fuente||p.urlFuente)&&React.createElement("a",{href:p.url_fuente||p.urlFuente,target:"_blank",onClick:e=>e.stopPropagation(),style:{color:C.acc,textDecoration:"none",fontSize:10}},"🔗 Ver fuente")
+                )
               ),
               React.createElement("div",{style:{textAlign:"right",flexShrink:0}},
                 React.createElement("div",{style:{fontSize:16,fontWeight:700,color:C.acc,fontFamily:F.m,marginBottom:4}},fmt(p.estimatedValue||0)),
