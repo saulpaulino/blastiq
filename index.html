@@ -410,7 +410,6 @@ function App(){
   const[sel,setSel]=useState(null);
   const[search,setSearch]=useState("");
   const[filter,setFilter]=useState("all");
-  const[projects,setProjects]=useState([]);
   const[competitors,setCompetitors]=useState([]);
   const[historical,setHistorical]=useState([]);
   const savedConfig=useRef(null);
@@ -426,23 +425,40 @@ function App(){
   useEffect(()=>{
     try{window.localStorage.setItem("blastiq_config",JSON.stringify(config));}catch(e){}
   },[config]);
-  const[dataMode,setDataMode]=useState("loading");
+
+  // SAVED projects = your real pipeline (persisted in localStorage)
+  const savedProjects=useRef(null);
+  if(!savedProjects.current){
+    try{
+      const saved=window.localStorage.getItem("blastiq_pipeline");
+      if(saved)savedProjects.current=JSON.parse(saved);
+    }catch(e){savedProjects.current=null;}
+  }
+  const[projects,setProjects]=useState(savedProjects.current||[]);
+  
+  // Save pipeline whenever it changes
+  useEffect(()=>{
+    try{window.localStorage.setItem("blastiq_pipeline",JSON.stringify(projects));}catch(e){}
+  },[projects]);
+
+  // CANDIDATES = temporary results from scanner (not saved)
+  const[candidates,setCandidates]=useState([]);
+
+  const[dataMode,setDataMode]=useState(savedProjects.current&&savedProjects.current.length>0?"saved":"empty");
   const[lastRefresh,setLastRefresh]=useState(null);
   const[showAlerts,setShowAlerts]=useState(false);
   const[alerts,setAlerts]=useState([]);
 
-  // Load from sheets
+  // Load competitors and historical from sheets (pipeline comes from localStorage now)
   const refresh=useCallback(async()=>{
     if(!config.apiKey||!config.sheetId)return;
-    const[projRows,compRows,histRows]=await Promise.all([
-      fetchSheet(config.apiKey,config.sheetId,"Proyectos","A1:S100"),
+    const[compRows,histRows]=await Promise.all([
       fetchSheet(config.apiKey,config.sheetId,"Competidores","A1:F20"),
       fetchSheet(config.apiKey,config.sheetId,"Historico","A1:D50")
     ]);
-    const p=parseProjects(projRows);if(p&&p.length)setProjects(p);
     const c=parseCompetitors(compRows);if(c&&c.length)setCompetitors(c);
     const h=parseHistorical(histRows);if(h&&h.length)setHistorical(h);
-    if(p||c||h){setDataMode("live");setLastRefresh(new Date());}
+    if(c||h){setLastRefresh(new Date());}
   },[config.apiKey,config.sheetId]);
 
   useEffect(()=>{
@@ -451,31 +467,47 @@ function App(){
     return()=>{if(iv)clearInterval(iv)};
   },[config.connected,refresh]);
 
-  // Handle new projects from scanner
+  // Handle new projects from scanner → go to CANDIDATES (not pipeline)
   const handleNewProjects=useCallback((newProjects)=>{
-    setProjects(prev=>{
-      const existingIds=prev.map(p=>p.title.toLowerCase());
-      const genuinelyNew=newProjects.filter(p=>!existingIds.includes((p.titulo||p.title||"").toLowerCase()));
-      const formatted=genuinelyNew.map(p=>({
-        id:p.id||"PRJ-NEW",title:p.titulo||p.title||"",source:p.fuente||p.source||"Scanner AI",
-        type:p.tipo||p.type||"",region:p.region||"",province:p.provincia||p.province||"",
-        estimatedValue:p.valor_estimado||p.estimatedValue||0,
-        blastingProbability:p.prob_voladura||p.blastingProbability||50,
-        detectedDate:p.fecha_deteccion||new Date().toISOString().split("T")[0],
-        estimatedStart:p.inicio_estimado||p.estimatedStart||"",status:p.status||"detectado",
-        description:p.descripcion||p.description||"",
-        signals:typeof p.señales==="string"?p.señales.split(";").map(s=>s.trim()).filter(Boolean):p.signals||[],
-        competitors:typeof p.competidores==="string"?p.competidores.split(";").map(s=>s.trim()).filter(Boolean):p.competitors||[],
-        aiInsight:p.ai_insight||p.aiInsight||"",priority:p.prioridad||p.priority||"medium",
-        contactLead:p.contacto||p.contactLead||"",
-        url_fuente:p.url_fuente||p.urlFuente||""
-      }));
-      if(formatted.length>0){
-        setAlerts(a=>[...formatted.map((p,i)=>({id:Date.now()+i,text:`Nuevo: ${p.title}`,time:"Ahora",read:false})),...a]);
-      }
-      return[...prev,...formatted];
-    });
+    const existingTitles=[...projects,...candidates].map(p=>(p.title||"").toLowerCase());
+    const formatted=newProjects.filter(p=>!existingTitles.includes((p.titulo||p.title||"").toLowerCase())).map(p=>({
+      id:p.id||"PRJ-"+Date.now().toString().slice(-4),title:p.titulo||p.title||"",source:p.fuente||p.source||"Scanner AI",
+      type:p.tipo||p.type||"",region:p.region||"",province:p.provincia||p.province||"",
+      estimatedValue:p.valor_estimado||p.estimatedValue||0,
+      blastingProbability:p.prob_voladura||p.blastingProbability||50,
+      detectedDate:p.fecha_deteccion||new Date().toISOString().split("T")[0],
+      estimatedStart:p.inicio_estimado||p.estimatedStart||"",status:p.status||"detectado",
+      description:p.descripcion||p.description||"",
+      signals:typeof p.señales==="string"?p.señales.split(";").map(s=>s.trim()).filter(Boolean):p.signals||[],
+      competitors:typeof p.competidores==="string"?p.competidores.split(";").map(s=>s.trim()).filter(Boolean):p.competitors||[],
+      aiInsight:p.ai_insight||p.aiInsight||"",priority:p.prioridad||p.priority||"medium",
+      contactLead:p.contacto||p.contactLead||"",
+      url_fuente:p.url_fuente||p.urlFuente||""
+    }));
+    if(formatted.length>0){
+      setCandidates(prev=>[...formatted,...prev]);
+      setAlerts(a=>[...formatted.map((p,i)=>({id:Date.now()+i,text:`Detectado: ${p.title}`,time:"Ahora",read:false})),...a]);
+    }
+  },[projects,candidates]);
+
+  // Approve candidate → move to pipeline (saved)
+  const approveProject=useCallback((project)=>{
+    setProjects(prev=>[project,...prev]);
+    setCandidates(prev=>prev.filter(c=>(c.id||c.title)!==(project.id||project.title)));
+    setDataMode("saved");
   },[]);
+
+  // Dismiss candidate
+  const dismissCandidate=useCallback((project)=>{
+    setCandidates(prev=>prev.filter(c=>(c.id||c.title)!==(project.id||project.title)));
+  },[]);
+
+  // Approve all candidates
+  const approveAll=useCallback(()=>{
+    setProjects(prev=>[...candidates,...prev]);
+    setCandidates([]);
+    setDataMode("saved");
+  },[candidates]);
 
   const filtered=projects.filter(p=>{
     const ms=!search||p.title?.toLowerCase().includes(search.toLowerCase())||p.province?.toLowerCase().includes(search.toLowerCase())||p.type?.toLowerCase().includes(search.toLowerCase());
@@ -514,6 +546,7 @@ function App(){
       React.createElement("nav",{style:{flex:1,padding:"12px 8px"}},
         navs.map(n=>React.createElement("button",{key:n.id,onClick:()=>setTab(n.id),style:{display:"flex",alignItems:"center",gap:10,width:"100%",padding:"10px 12px",marginBottom:2,background:tab===n.id?C.accG:"transparent",border:tab===n.id?`1px solid ${C.acc}33`:"1px solid transparent",borderRadius:8,cursor:"pointer",color:tab===n.id?C.acc:C.txM,fontFamily:F.b,fontSize:13,fontWeight:tab===n.id?600:400}},
           React.createElement("span",{style:{fontSize:15}},n.ico),n.label,
+          n.id==="scanner"&&candidates.length>0&&React.createElement("span",{style:{marginLeft:"auto",minWidth:18,height:18,borderRadius:9,background:C.acc,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:C.bg,fontFamily:F.m}},candidates.length),
           n.id==="scanner"&&config.claudeKey&&React.createElement("span",{style:{marginLeft:"auto",width:6,height:6,borderRadius:"50%",background:C.ok}})
         ))
       ),
@@ -651,7 +684,41 @@ function App(){
         ),
 
         // SCANNER
-        tab==="scanner"&&React.createElement(Scanner,{claudeKey:config.claudeKey,projects,onNewProjects:handleNewProjects}),
+        tab==="scanner"&&React.createElement("div",{style:{animation:"slideIn .3s ease",display:"flex",flexDirection:"column",gap:20}},
+          React.createElement(Scanner,{claudeKey:config.claudeKey,projects:[...projects,...candidates],onNewProjects:handleNewProjects}),
+          
+          // CANDIDATES LIST
+          candidates.length>0&&React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,overflow:"hidden"}},
+            React.createElement("div",{style:{padding:"16px 20px",borderBottom:`1px solid ${C.brd}`,display:"flex",justifyContent:"space-between",alignItems:"center"}},
+              React.createElement("div",{style:{display:"flex",alignItems:"center",gap:10}},
+                React.createElement("span",{style:{fontSize:11,color:C.acc,fontFamily:F.m,textTransform:"uppercase",letterSpacing:1,fontWeight:700}},"PROYECTOS DETECTADOS"),
+                React.createElement("span",{style:{fontSize:10,background:C.accG,color:C.acc,padding:"2px 8px",borderRadius:10,fontFamily:F.m,fontWeight:700}},candidates.length)
+              ),
+              React.createElement("div",{style:{display:"flex",gap:8}},
+                React.createElement("button",{onClick:approveAll,style:{background:C.ok,border:"none",borderRadius:6,padding:"6px 14px",fontSize:11,fontWeight:700,color:"#fff",fontFamily:F.m,cursor:"pointer"}},"✓ Guardar Todos"),
+                React.createElement("button",{onClick:()=>setCandidates([]),style:{background:"none",border:`1px solid ${C.brd}`,borderRadius:6,padding:"6px 14px",fontSize:11,color:C.txD,fontFamily:F.m,cursor:"pointer"}},"Descartar Todos")
+              )
+            ),
+            candidates.map((p,i)=>React.createElement("div",{key:p.id||i,style:{padding:"14px 20px",borderBottom:`1px solid ${C.brd}`,display:"flex",alignItems:"center",gap:14,animation:`slideIn .3s ease ${i*.05}s both`}},
+              React.createElement(Gauge,{value:p.blastingProbability||0,size:42}),
+              React.createElement("div",{style:{flex:1,cursor:"pointer"},onClick:()=>setSel(p)},
+                React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center",marginBottom:3}},
+                  React.createElement("span",{style:{fontSize:9,fontFamily:F.m,color:pC(p.priority),background:pB(p.priority),padding:"2px 6px",borderRadius:3,textTransform:"uppercase",fontWeight:700}},p.priority),
+                  React.createElement("span",{style:{fontSize:10,color:C.txD,fontFamily:F.m}},p.id)
+                ),
+                React.createElement("div",{style:{fontSize:13,fontWeight:600,color:C.tx,fontFamily:F.b,marginBottom:3}},p.title),
+                React.createElement("div",{style:{fontSize:11,color:C.txM,fontFamily:F.m}},(p.type||"")+" · "+(p.province||"")+" · "+(p.source||"")+(p.detectedDate?" · 📅 "+p.detectedDate:""))
+              ),
+              React.createElement("div",{style:{textAlign:"right",flexShrink:0,marginRight:8}},
+                React.createElement("div",{style:{fontSize:14,fontWeight:700,color:C.acc,fontFamily:F.m}},fmt(p.estimatedValue||0))
+              ),
+              React.createElement("div",{style:{display:"flex",gap:6,flexShrink:0}},
+                React.createElement("button",{onClick:()=>approveProject(p),title:"Guardar al Pipeline",style:{background:C.okBg,border:`1px solid ${C.ok}44`,borderRadius:6,padding:"8px 12px",fontSize:12,color:C.ok,cursor:"pointer",fontWeight:700}},"✓"),
+                React.createElement("button",{onClick:()=>dismissCandidate(p),title:"Descartar",style:{background:C.crBg,border:`1px solid ${C.cr}44`,borderRadius:6,padding:"8px 12px",fontSize:12,color:C.cr,cursor:"pointer",fontWeight:700}},"✕")
+              )
+            ))
+          )
+        ),
 
         // COMPETITORS
         tab==="competitors"&&React.createElement("div",{style:{animation:"slideIn .3s ease"}},
