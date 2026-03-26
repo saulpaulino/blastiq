@@ -603,7 +603,7 @@ function App(){
       if(saved)savedConfig.current=JSON.parse(saved);
     }catch(e){savedConfig.current=null;}
   }
-  const[config,setConfig]=useState(savedConfig.current||{apiKey:"AIzaSyCKJl-CKO0xUUpS3BdO97T26ousoTbj4kg",sheetId:"1j4DGQ714-02DBAVaH2AvMTlQDd2wxzqfdMhxOjWIwKA",claudeKey:"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",scriptUrl:"",connected:true});
+  const[config,setConfig]=useState(savedConfig.current||{apiKey:"AIzaSyCKJl-CKO0xUUpS3BdO97T26ousoTbj4kg",sheetId:"1j4DGQ714-02DBAVaH2AvMTlQDd2wxzqfdMhxOjWIwKA",claudeKey:"",scriptUrl:"",connected:true});
   
   // Save config whenever it changes
   useEffect(()=>{
