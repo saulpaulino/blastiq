@@ -42,63 +42,23 @@ const pB=p=>p==="critical"?C.crBg:p==="high"?C.hiBg:p==="medium"?C.mdBg:"rgba(10
 const sMap={"pre-licitación":"Pre-Licitación","diseño-avanzado":"Diseño Avanzado","estudio-factibilidad":"Factibilidad","permiso-aprobado":"Permiso OK","negociación":"Negociación","planificación":"Planificación","licitación-activa":"Licitación Activa","detectado":"Detectado"};
 const sL=s=>sMap[s]||s;
 
-// ===== GOOGLE SHEETS API =====
-async function fetchSheet(apiKey,sheetId,name,range){
-  if(!apiKey||!sheetId)return null;
-  try{
-    const r=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(name)}!${range}?key=${apiKey}`);
-    if(!r.ok)throw new Error(r.status);
-    return(await r.json()).values||[];
-  }catch(e){console.error("Fetch sheet error:",e);return null;}
-}
+// ===== DEFAULT DATA (localStorage only, no Google Sheets) =====
+const DEFAULT_COMPETITORS=[
+  {name:"MAXAM Dominicana",marketShare:35,projects:12,avgPrice:"$180K",threat:"high"},
+  {name:"Explosivos del Caribe",marketShare:25,projects:8,avgPrice:"$150K",threat:"medium"},
+  {name:"Austin Powder",marketShare:15,projects:5,avgPrice:"$200K",threat:"medium"},
+  {name:"Nosotros",marketShare:18,projects:6,avgPrice:"$165K",threat:"-"},
+  {name:"Otros",marketShare:7,projects:2,avgPrice:"$120K",threat:"low"}
+];
 
-async function writeToSheet(scriptUrl,projects){
-  if(!scriptUrl||!projects||!projects.length)return;
-  try{
-    fetch(scriptUrl,{method:"POST",mode:"no-cors",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({action:"appendPipeline",projects})
-    });
-  }catch(e){console.error("Sheet write:",e);}
-}
-
-async function loadPipelineFromSheet(apiKey,sheetId){
-  const rows=await fetchSheet(apiKey,sheetId,"Pipeline","A2:S500");
-  if(!rows||rows.length===0)return null;
-  return rows.filter(r=>r[1]).map(r=>({
-    id:r[0]||"",title:r[1]||"",source:r[2]||"",type:r[3]||"",
-    region:r[4]||"",province:r[5]||"",
-    estimatedValue:parseFloat(r[6])||0,blastingProbability:parseInt(r[7])||0,
-    detectedDate:r[8]||"",estimatedStart:r[9]||"",status:r[10]||"detectado",
-    description:r[11]||"",
-    signals:r[12]?String(r[12]).split(";").map(s=>s.trim()).filter(Boolean):[],
-    competitors:r[13]?String(r[13]).split(";").map(s=>s.trim()).filter(Boolean):[],
-    aiInsight:r[14]||"",priority:r[15]||"medium",
-    contactLead:r[16]||"",url_fuente:r[17]||""
-  }));
-}
-
-function parseProjects(rows){
-  if(!rows||rows.length<2)return null;
-  return rows.slice(1).map(r=>({
-    id:r[0]||"",title:r[1]||"",source:r[2]||"",type:r[3]||"",region:r[4]||"",province:r[5]||"",
-    estimatedValue:parseFloat(r[6])||0,blastingProbability:parseInt(r[7])||0,detectedDate:r[8]||"",
-    estimatedStart:r[9]||"",status:r[10]||"",description:r[11]||"",
-    signals:(r[12]||"").split(";").map(s=>s.trim()).filter(Boolean),
-    competitors:(r[13]||"").split(";").map(s=>s.trim()).filter(Boolean),
-    aiInsight:r[14]||"",priority:r[15]||"medium",contactLead:r[16]||""
-  }));
-}
-
-function parseCompetitors(rows){
-  if(!rows||rows.length<2)return null;
-  return rows.slice(1).map(r=>({name:r[0]||"",marketShare:parseInt(r[1])||0,projects:parseInt(r[2])||0,avgPrice:r[3]||"",threat:r[4]||"low"}));
-}
-
-function parseHistorical(rows){
-  if(!rows||rows.length<2)return null;
-  return rows.slice(1).map(r=>({month:r[0]||"",revenue:parseInt(r[1])||0,projects:parseInt(r[2])||0,winRate:parseInt(r[3])||0}));
-}
+const DEFAULT_HISTORICAL=[
+  {month:"Oct",revenue:45000,projects:2,winRate:72},
+  {month:"Nov",revenue:62000,projects:3,winRate:78},
+  {month:"Dic",revenue:58000,projects:2,winRate:75},
+  {month:"Ene",revenue:74000,projects:4,winRate:82},
+  {month:"Feb",revenue:88000,projects:5,winRate:84},
+  {month:"Mar",revenue:95000,projects:4,winRate:86}
+];
 
 // ===== NEWS SCANNER ENGINE =====
 async function scanNews(claudeKey, existingTitles){
@@ -594,8 +554,8 @@ function App(){
   const[sel,setSel]=useState(null);
   const[search,setSearch]=useState("");
   const[filter,setFilter]=useState("all");
-  const[competitors,setCompetitors]=useState([]);
-  const[historical,setHistorical]=useState([]);
+  const[competitors]=useState(DEFAULT_COMPETITORS);
+  const[historical]=useState(DEFAULT_HISTORICAL);
   const savedConfig=useRef(null);
   if(!savedConfig.current){
     try{
@@ -603,8 +563,8 @@ function App(){
       if(saved)savedConfig.current=JSON.parse(saved);
     }catch(e){savedConfig.current=null;}
   }
-  const[config,setConfig]=useState(savedConfig.current||{apiKey:"AIzaSyCKJl-CKO0xUUpS3BdO97T26ousoTbj4kg",sheetId:"1j4DGQ714-02DBAVaH2AvMTlQDd2wxzqfdMhxOjWIwKA",claudeKey:"",scriptUrl:"",connected:true});
-  
+  const[config,setConfig]=useState(savedConfig.current||{claudeKey:""});
+
   // Save config whenever it changes
   useEffect(()=>{
     try{window.localStorage.setItem("geotechnical_config",JSON.stringify(config));}catch(e){}
@@ -628,37 +588,8 @@ function App(){
   // CANDIDATES = temporary results from scanner (not saved)
   const[candidates,setCandidates]=useState([]);
 
-  const[dataMode,setDataMode]=useState(savedProjects.current&&savedProjects.current.length>0?"saved":"empty");
-  const[lastRefresh,setLastRefresh]=useState(null);
   const[showAlerts,setShowAlerts]=useState(false);
   const[alerts,setAlerts]=useState([]);
-
-  // Load competitors and historical from sheets (pipeline comes from localStorage now)
-  const refresh=useCallback(async()=>{
-    if(!config.apiKey||!config.sheetId)return;
-    const[compRows,histRows]=await Promise.all([
-      fetchSheet(config.apiKey,config.sheetId,"Competidores","A1:F20"),
-      fetchSheet(config.apiKey,config.sheetId,"Historico","A1:D50")
-    ]);
-    const c=parseCompetitors(compRows);if(c&&c.length)setCompetitors(c);
-    const h=parseHistorical(histRows);if(h&&h.length)setHistorical(h);
-    const pipe=await loadPipelineFromSheet(config.apiKey,config.sheetId);
-    if(pipe&&pipe.length){
-      setProjects(prev=>{
-        const existIds=new Set(prev.map(p=>p.id||p.title));
-        const fresh=pipe.filter(p=>!existIds.has(p.id||p.title));
-        return fresh.length?[...fresh,...prev]:prev;
-      });
-      setDataMode("live");
-    }
-    if(c||h||pipe){setLastRefresh(new Date());}
-  },[config.apiKey,config.sheetId]);
-
-  useEffect(()=>{
-    if(config.connected)refresh();
-    const iv=config.connected?setInterval(refresh,240000):null;
-    return()=>{if(iv)clearInterval(iv)};
-  },[config.connected,refresh]);
 
   // Handle new projects from scanner → go to CANDIDATES (not pipeline)
   const handleNewProjects=useCallback((newProjects)=>{
@@ -687,9 +618,7 @@ function App(){
   const approveProject=useCallback((project)=>{
     setProjects(prev=>[project,...prev]);
     setCandidates(prev=>prev.filter(c=>(c.id||c.title)!==(project.id||project.title)));
-    setDataMode("saved");
-    if(config.scriptUrl)writeToSheet(config.scriptUrl,[project]);
-  },[config.scriptUrl]);
+  },[]);
 
   // Dismiss candidate
   const dismissCandidate=useCallback((project)=>{
@@ -698,11 +627,9 @@ function App(){
 
   // Approve all candidates
   const approveAll=useCallback(()=>{
-    if(config.scriptUrl&&candidates.length)writeToSheet(config.scriptUrl,candidates);
     setProjects(prev=>[...candidates,...prev]);
     setCandidates([]);
-    setDataMode("saved");
-  },[candidates,config.scriptUrl]);
+  },[candidates]);
 
   const filtered=projects.filter(p=>{
     const ms=!search||p.title?.toLowerCase().includes(search.toLowerCase())||p.province?.toLowerCase().includes(search.toLowerCase())||p.type?.toLowerCase().includes(search.toLowerCase());
@@ -711,7 +638,7 @@ function App(){
   const totVal=projects.reduce((s,p)=>s+(p.estimatedValue||0),0);
   const critN=projects.filter(p=>p.priority==="critical").length;
   const avgB=Math.round(projects.reduce((s,p)=>s+(p.blastingProbability||0),0)/(projects.length||1));
-  const lastWR=historical.length?historical[historical.length-1].winRate:0;
+  const lastWR=historical[historical.length-1].winRate;
 
   const navs=[
     {id:"dashboard",label:"Dashboard",ico:"📊"},
@@ -763,10 +690,10 @@ function App(){
       ),
       React.createElement("div",{style:{padding:"12px"}},
         React.createElement("div",{style:{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:C.bg,borderRadius:8,border:`1px solid ${C.brd}`}},
-          React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:config.connected?C.ok:C.acc,animation:config.connected?"none":"pulse 2s infinite"}}),
+          React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:config.claudeKey?C.ok:C.acc,animation:config.claudeKey?"none":"pulse 2s infinite"}}),
           React.createElement("div",null,
-            React.createElement("div",{style:{fontSize:10,fontFamily:F.m,color:config.connected?C.ok:C.acc,fontWeight:600}},config.connected?"CONECTADO":"NO CONECTADO"),
-            React.createElement("div",{style:{fontSize:9,color:C.txD,fontFamily:F.m}},config.claudeKey?"Claude + Sheets":"Configurar →")
+            React.createElement("div",{style:{fontSize:10,fontFamily:F.m,color:config.claudeKey?C.ok:C.acc,fontWeight:600}},config.claudeKey?"CLAUDE ACTIVO":"SIN API KEY"),
+            React.createElement("div",{style:{fontSize:9,color:C.txD,fontFamily:F.m}},config.claudeKey?"Escáner listo":"Configurar →")
           )
         )
       ),
@@ -786,7 +713,7 @@ function App(){
         React.createElement("div",null,
           React.createElement("h1",{style:{fontSize:16,fontWeight:700,fontFamily:F.h,color:C.tx}},navs.find(n=>n.id===tab)?.label),
           React.createElement("div",{style:{fontSize:11,color:C.txD,fontFamily:F.m,marginTop:2}},
-            (dataMode==="live"?"🟢 En vivo · Sheet Sync":"⚪ Configura conexión")+" · "+new Date().toLocaleTimeString("es-DO",{hour:"2-digit",minute:"2-digit"})
+            (config.claudeKey?"🟢 Claude activo · LocalStorage":"⚪ Configura tu API Key")+" · "+new Date().toLocaleTimeString("es-DO",{hour:"2-digit",minute:"2-digit"})
           )
         ),
         React.createElement("div",{style:{display:"flex",gap:8,alignItems:"center"}},
@@ -855,7 +782,7 @@ function App(){
                 )
               )
             ),
-            projects.length===0&&React.createElement("div",{style:{padding:"40px 20px",textAlign:"center",color:C.txD,fontFamily:F.b,fontSize:13}},"Conecta tu Google Sheet en el tab Conexión para ver datos")
+            projects.length===0&&React.createElement("div",{style:{padding:"40px 20px",textAlign:"center",color:C.txD,fontFamily:F.b,fontSize:13}},"Usa el Escáner para detectar proyectos y apruébalos al pipeline")
           )
         ),
 
@@ -961,7 +888,7 @@ function App(){
                 )
               )
             )
-          ):React.createElement("div",{style:{textAlign:"center",padding:40,color:C.txD}},"Conecta tu Google Sheet para ver datos de competencia")
+          )
         ),
 
         // AI
@@ -970,47 +897,19 @@ function App(){
         // SETTINGS
         tab==="settings"&&React.createElement("div",{style:{animation:"slideIn .3s ease",maxWidth:600}},
           React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:24,marginBottom:16}},
-            React.createElement("h3",{style:{fontSize:14,fontWeight:700,fontFamily:F.h,color:C.tx,marginBottom:4}},"Google Sheets"),
-            React.createElement("p",{style:{fontSize:12,color:C.txM,fontFamily:F.b,marginBottom:16}},"Para leer los datos de tu pipeline"),
-            React.createElement("div",{style:{marginBottom:12}},
-              React.createElement("label",{style:{display:"block",fontSize:11,color:C.txD,fontFamily:F.m,letterSpacing:1,marginBottom:6}},"SHEETS API KEY"),
-              React.createElement("input",{type:"password",value:config.apiKey,onChange:e=>setConfig(c=>({...c,apiKey:e.target.value})),placeholder:"AIzaSy...",style:{width:"100%",background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",fontSize:13,color:C.tx,fontFamily:F.m,outline:"none"}})
-            ),
-            React.createElement("div",{style:{marginBottom:16}},
-              React.createElement("label",{style:{display:"block",fontSize:11,color:C.txD,fontFamily:F.m,letterSpacing:1,marginBottom:6}},"SPREADSHEET ID"),
-              React.createElement("input",{value:config.sheetId,onChange:e=>setConfig(c=>({...c,sheetId:e.target.value})),placeholder:"El ID de tu Google Sheet",style:{width:"100%",background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",fontSize:13,color:C.tx,fontFamily:F.m,outline:"none"}})
-            ),
-            React.createElement("button",{onClick:()=>{if(config.apiKey&&config.sheetId)setConfig(c=>({...c,connected:!c.connected}))},style:{background:config.connected?C.crBg:C.accG,border:`1px solid ${config.connected?C.cr+"44":C.acc+"44"}`,borderRadius:8,padding:"10px 20px",fontSize:12,fontWeight:700,color:config.connected?C.cr:C.acc,fontFamily:F.m,cursor:"pointer",opacity:!config.apiKey||!config.sheetId?.4:1}},config.connected?"⏹ Desconectar Sheets":"▶ Conectar Sheets")
-          ),
-          React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:24,marginBottom:16}},
             React.createElement("h3",{style:{fontSize:14,fontWeight:700,fontFamily:F.h,color:C.tx,marginBottom:4}},"Claude AI"),
-            React.createElement("p",{style:{fontSize:12,color:C.txM,fontFamily:F.b,marginBottom:16}},"Para el Escáner de noticias y el AI Analyst"),
+            React.createElement("p",{style:{fontSize:12,color:C.txM,fontFamily:F.b,marginBottom:16}},"Necesaria para el Escáner de noticias y el AI Analyst"),
             React.createElement("div",{style:{marginBottom:16}},
               React.createElement("label",{style:{display:"block",fontSize:11,color:C.txD,fontFamily:F.m,letterSpacing:1,marginBottom:6}},"CLAUDE API KEY"),
               React.createElement("input",{type:"password",value:config.claudeKey,onChange:e=>setConfig(c=>({...c,claudeKey:e.target.value})),placeholder:"sk-ant-...",style:{width:"100%",background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",fontSize:13,color:C.tx,fontFamily:F.m,outline:"none"}})
             ),
             React.createElement("div",{style:{padding:12,background:config.claudeKey?C.okBg:C.bg,border:`1px solid ${config.claudeKey?C.ok+"33":C.brd}`,borderRadius:8}},
-              React.createElement("div",{style:{fontSize:12,color:config.claudeKey?C.ok:C.txD,fontFamily:F.m,fontWeight:600}},config.claudeKey?"✓ Claude configurado — Escáner y AI Analyst listos":"Pega tu key de console.anthropic.com")
-            )
-          ),
-          React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:24,marginBottom:16}},
-            React.createElement("h3",{style:{fontSize:14,fontWeight:700,fontFamily:F.h,color:C.tx,marginBottom:4}},"Google Apps Script"),
-            React.createElement("div",{style:{display:"flex",alignItems:"center",gap:6,marginBottom:12}},
-              React.createElement("div",{style:{width:8,height:8,borderRadius:"50%",background:config.scriptUrl?"#10b981":"#A63D40"}}),
-              React.createElement("p",{style:{fontSize:12,color:C.txM,fontFamily:F.b,margin:0}},
-                config.scriptUrl?"Proyectos se guardan automáticamente al Sheet":"Requerido para guardar proyectos al Google Sheet")
-            ),
-            React.createElement("div",{style:{marginBottom:12}},
-              React.createElement("label",{style:{display:"block",fontSize:11,color:C.txD,fontFamily:F.m,letterSpacing:1,marginBottom:6}},"URL DEL WEB APP"),
-              React.createElement("input",{value:config.scriptUrl||"",onChange:e=>setConfig(c=>({...c,scriptUrl:e.target.value})),placeholder:"https://script.google.com/macros/s/TU_ID/exec",style:{width:"100%",background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",fontSize:12,color:C.tx,fontFamily:F.m,outline:"none"}})
-            ),
-            React.createElement("div",{style:{padding:"10px 14px",background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,fontSize:11,color:C.txD,fontFamily:F.b,lineHeight:1.7}},
-              "Instrucciones: Abre tu Google Sheet → Extensiones → Apps Script → pega el contenido de apps-script.gs → Implementar → Nueva implementación → Tipo: Aplicación web → Acceso: Cualquier usuario → Copia la URL"
+              React.createElement("div",{style:{fontSize:12,color:config.claudeKey?C.ok:C.txD,fontFamily:F.m,fontWeight:600}},config.claudeKey?"✓ Claude configurado — Escáner y AI Analyst listos":"Obtén tu key en console.anthropic.com")
             )
           ),
           React.createElement("div",{style:{background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:24}},
-            React.createElement("h3",{style:{fontSize:14,fontWeight:700,fontFamily:F.h,color:C.tx,marginBottom:16}},"¿Cómo funciona ahora?"),
-            [{s:"1",t:"Tú le das click a Escanear",d:"En el tab Escáner, un botón busca noticias nuevas"},{s:"2",t:"Claude busca en la web",d:"Usa web search para encontrar noticias de infraestructura RD"},{s:"3",t:"Claude analiza cada noticia",d:"Clasifica, asigna probabilidad de voladura, genera insights"},{s:"4",t:"Proyectos se guardan al Sheet",d:"Se guardan en Google Sheets y aparecen en el dashboard"},{s:"5",t:"Activa Auto cada 4h",d:"El escáner corre solo si activas el toggle automático"}].map((s,i)=>
+            React.createElement("h3",{style:{fontSize:14,fontWeight:700,fontFamily:F.h,color:C.tx,marginBottom:16}},"¿Cómo funciona?"),
+            [{s:"1",t:"Pega tu API Key arriba",d:"Obtén tu key en console.anthropic.com"},{s:"2",t:"Ve al tab Escáner",d:"Click en Escanear Ahora para buscar proyectos nuevos"},{s:"3",t:"Claude busca en la web",d:"Usa web search para encontrar noticias de infraestructura RD"},{s:"4",t:"Aprueba o descarta proyectos",d:"Los aprobados se guardan automáticamente en tu navegador"},{s:"5",t:"Activa Auto cada 4h",d:"El escáner corre solo si activas el toggle automático"}].map((s,i)=>
               React.createElement("div",{key:i,style:{display:"flex",gap:14,padding:"10px 0",borderBottom:i<4?`1px solid ${C.brd}`:"none"}},
                 React.createElement("div",{style:{width:28,height:28,borderRadius:"50%",background:C.accG,border:`1px solid ${C.acc}33`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:C.acc,fontFamily:F.m,flexShrink:0}},s.s),
                 React.createElement("div",null,
